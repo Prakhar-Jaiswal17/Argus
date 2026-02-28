@@ -44,15 +44,15 @@ Argus compares **how code behaves structurally**, not how it looks textually.
 
 
 Code
-↓
+
 AST Parsing
-↓
+→
 Identifier Normalization
-↓
+→
 Structural Fingerprint Extraction
-↓
+→
 Similarity Scoring
-↓
+→
 Cluster & Diff Visualization
 
 
@@ -111,27 +111,3 @@ Free to use, modify, and contribute.
 
 **Lala Warriors** 🚀  
 Hackathon Project — OVERLOCK 24
-
-This is:
-
-Clean
-
-Professional
-
-Visually structured
-
-Hackathon-level polished
-
-GitHub-ready
-
-If you want, next I can:
-
-Make it even more premium with a banner design layout
-
-Add contribution guidelines section
-
-Add installation & usage commands
-
-Or help you design the folder structure
-
-Tell me what’s next. 🚀
