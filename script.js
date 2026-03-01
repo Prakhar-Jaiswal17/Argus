@@ -50,6 +50,11 @@ if __name__ == "__main__":
 
 // ── API base URL ──────────────────────────────────────────────────────
 const API = 'http://localhost:8000';
+const MIN_LINES = 10;
+
+function countLines(code) {
+  return code.trim().split('\n').filter(l => l.trim().length > 0).length;
+}
 
 // ── Load samples ──────────────────────────────────────────────────────
 async function loadSample(which, btn) {
@@ -237,7 +242,12 @@ function showResults(data, ngramSize) {
 
   // Verdict
   let icon, colour;
-  if (score >= 0.70) {
+  const isLimitedSolution = (data.verdict || '').includes('Limited-Solution');
+
+  if (isLimitedSolution) {
+    icon = '📘';
+    colour = 'rgba(59,130,246,0.30)';
+  } else if (score >= 0.70) {
     icon = '⚠️';
     colour = 'rgba(244,63,94,0.35)';
   } else if (score >= 0.40) {
@@ -390,7 +400,15 @@ async function runScan() {
   hideError();
 
   if (!code1 || !code2) {
-    showError('Please paste Python code into both editors before scanning.');
+    showError('Please paste code into both editors before scanning.');
+    return;
+  }
+
+  const linesA = countLines(code1);
+  const linesB = countLines(code2);
+  if (linesA < MIN_LINES || linesB < MIN_LINES) {
+    const which = linesA < MIN_LINES ? `File A (${linesA} lines)` : `File B (${linesB} lines)`;
+    showError(`${which} is too short. Code must be at least ${MIN_LINES} non-empty lines for reliable analysis.`);
     return;
   }
 
@@ -490,6 +508,12 @@ async function runAiSingleScan() {
 
   if (!code) {
     showError('Please paste code into the editor before scanning.');
+    return;
+  }
+
+  const lineCount = countLines(code);
+  if (lineCount < MIN_LINES) {
+    showError(`Code has only ${lineCount} non-empty lines. It must be at least ${MIN_LINES} lines long for reliable AI detection.`);
     return;
   }
 

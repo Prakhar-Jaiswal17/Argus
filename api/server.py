@@ -41,6 +41,21 @@ app.add_middleware(
 
 PLAGIARISM_THRESHOLD = 0.70
 MODERATE_THRESHOLD = 0.40
+MIN_LINES = 10
+
+
+def validate_min_lines(code: str, label: str = "Code") -> None:
+    """Raise HTTP 400 if the code has fewer than MIN_LINES non-empty lines."""
+    line_count = len([l for l in code.strip().splitlines() if l.strip()])
+    if line_count < MIN_LINES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{label} has only {line_count} non-empty lines. "
+                f"Code must be at least {MIN_LINES} lines long "
+                f"for reliable plagiarism or AI detection."
+            ),
+        )
 
 
 # ── Request / Response models ────────────────────────────────────────────────
@@ -110,18 +125,26 @@ def ai_verify_plagiarism(
     try:
         client = Groq(api_key=api_key)
         prompt = f"""
-        Analyze the following two {language} code snippets.
-        First, determine if they are attempting to solve the SAME logical problem or algorithm, regardless of variable names, structural obfuscation, or quality.
-        Second, if they solve the same problem, determine if they use the SAME core logic/approach.
-        
+        Analyze the following two {language} code snippets for plagiarism.
+
+        STEP 1 — Determine if they solve the SAME problem or algorithm.
+        STEP 2 — If yes, determine if the problem has LIMITED SOLUTIONS.
+        Many classic problems (e.g. Two-Sum with hash map, binary search, FizzBuzz, basic sorting algorithms, simple CRUD operations, standard tree traversals) have only a handful of correct approaches. If the problem is well-known and the structural similarity is simply because there are very few valid ways to solve it, mark "limited_solutions" as true.
+        STEP 3 — Check for BLATANT COPYING indicators:
+        - Identical or near-identical variable/function names
+        - Same comments, docstrings, or formatting
+        - Same code structure AND same naming conventions
+        If the codes solve the same problem but use DIFFERENT variable names, formatting, comments, and coding style, that is strong evidence of independent work — NOT plagiarism.
+        STEP 4 — Only flag "same_logic" as true (plagiarism suspected) when both codes share the same approach AND show blatant copying indicators (same names, same formatting, same comments). If they merely share the same algorithmic approach but differ in style, names, and formatting, set "same_logic" to false.
+
         Code 1:
         {code1}
-        
+
         Code 2:
         {code2}
-        
+
         Respond ONLY with a JSON object in this format:
-        {{"same_problem": true/false, "same_logic": true/false, "confidence": 0-100, "reason": "brief string explaining your reasoning"}}
+        {{"same_problem": true/false, "same_logic": true/false, "limited_solutions": true/false, "confidence": 0-100, "reason": "brief string explaining your reasoning"}}
         """
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -135,6 +158,7 @@ def ai_verify_plagiarism(
         return {
             "same_problem": True,
             "same_logic": True,
+            "limited_solutions": False,
             "error": str(e),
         }
 
@@ -184,20 +208,42 @@ def ai_detect_generation(code: str, language: str, api_key: str) -> dict[str, ob
         client = Groq(api_key=api_key)
 
         prompt = f"""
-        Analyze the following {language} code snippet.
-        Determine if it was likely written by an AI (like ChatGPT or Claude) or a human.
-        CRITICAL: Be extremely conservative. Standard algorithms, short scripts, and typical classroom solutions naturally look generic. Assume it is HUMAN-WRITTEN unless there are undeniable hallmarks of LLM generation: extremely robotic/perfect structure, essay-long comments explaining trivial concepts, hallucinated libraries, or highly sterilized variable naming that a student would never write.
-        
+        You are an expert code analyst. Analyze the following {language} code snippet and determine whether it was written by AI (e.g. ChatGPT, Claude, Copilot) or by a human.
+
+        **Common signs of AI-generated code:**
+        - Overly clean, uniform formatting with consistent style throughout
+        - Comprehensive docstrings, type hints, and inline comments explaining obvious logic
+        - Perfect error handling patterns (try/except with specific exceptions)
+        - Textbook-perfect variable naming (descriptive, snake_case, no abbreviations)
+        - Modular structure with helper functions even for simple tasks
+        - Generic placeholder names like "example", "sample", "demo" in non-demo code
+        - Step-by-step comments that read like a tutorial
+        - Defensive coding patterns everywhere (input validation, edge case handling)
+        - Using modern best practices uniformly (f-strings, pathlib, dataclasses, etc.)
+        - Code that feels "too perfect" — no shortcuts, no quirks, no personality
+
+        **Common signs of human-written code:**
+        - Inconsistent style, mixed formatting, or personal coding quirks
+        - Minimal or no comments/docstrings
+        - Abbreviated or cryptic variable names
+        - Missing error handling or incomplete edge case coverage
+        - Copy-paste artifacts or TODO comments
+        - Organic, imperfect structure that evolved during development
+        - Hard-coded values, magic numbers, or quick hacks
+
+        Weigh ALL indicators objectively. Do NOT default to either conclusion — evaluate the evidence fairly.
+
         Code:
         {code}
-        
+
         Respond ONLY with a JSON object in this format:
         {{"is_ai": true/false, "confidence": 0-100, "reason": "brief 1-sentence string explaining your reasoning"}}
         """
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "system", "content": "You are an expert at distinguishing AI-generated code from human-written code. Be accurate and objective."}, {"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
+            temperature=0.3,
         )
         content = response.choices[0].message.content
         return json.loads(content or "{}")
@@ -217,6 +263,10 @@ def compare_code(payload: CompareRequest):
     Endpoint to compare two source code snippets using Tree-sitter AST extraction
     and N-gram generation for Jaccard similarity.
     """
+    # 0. Minimum line-count validation
+    validate_min_lines(payload.code1, "File A")
+    validate_min_lines(payload.code2, "File B")
+
     # 1. API Key validation for LLM checks
     active_api_key = (
         payload.api_key
@@ -267,6 +317,10 @@ def compare_code(payload: CompareRequest):
             score = 0.0
             verdict = "⚠️ Different Problem Statements"
             ai_reasoning = ai_check.get("reason", "AI determined different problems.")
+        elif ai_check.get("limited_solutions", False) and not ai_check.get("same_logic", True):
+            verdict = "✅ Limited-Solution Problem — Not Plagiarism"
+            ai_reasoning = ai_check.get("reason", "This problem has very few valid solutions; structural similarity is expected.")
+            score = max(score * 0.3, 0.0)
         else:
             if not ai_check.get("same_logic", True):
                 verdict += " (AI: Different Logic Used)"
@@ -321,6 +375,7 @@ def compare_zip(
 
     try:
         content = file.file.read()
+        skipped_short_zip: list[str] = []
         with zipfile.ZipFile(io.BytesIO(content), "r") as zip_ref:
             py_files = {}
             for name in zip_ref.namelist():
@@ -329,9 +384,14 @@ def compare_zip(
                 ):
                     if not name.endswith("/"):
                         clean_name = os.path.basename(name) or name
-                        py_files[clean_name] = zip_ref.read(name).decode(
+                        code_text = zip_ref.read(name).decode(
                             "utf-8", "ignore"
                         )
+                        non_empty = len([l for l in code_text.strip().splitlines() if l.strip()])
+                        if non_empty < MIN_LINES:
+                            skipped_short_zip.append(clean_name)
+                            continue
+                        py_files[clean_name] = code_text
 
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="Invalid ZIP file.")
@@ -420,7 +480,20 @@ def compare_zip(
             ai_check = ai_verify_plagiarism(
                 py_files[f1], py_files[f2], language, active_api_key
             )
-            if not ai_check.get("same_problem", True):
+            if ai_check.get("limited_solutions", False) and not ai_check.get("same_logic", True):
+                reason = str(ai_check.get("reason", "Limited-solution problem"))
+                results.append(
+                    BatchCompareResult(
+                        file1=f1,
+                        file2=f2,
+                        score=max(score * 0.3, 0.0),
+                        score_pct=f"{max(score * 0.3, 0.0) * 100:.1f}%",
+                        verdict=f"✅ Limited-Solution Problem — {reason}",
+                        details={"ai_reasoning": reason},
+                    )
+                )
+                continue
+            elif not ai_check.get("same_problem", True):
                 reason = str(ai_check.get("reason", "Different Problem Statements"))
                 results.append(
                     BatchCompareResult(
@@ -466,6 +539,9 @@ def detect_ai_single(payload: SingleAiRequest):
     """
     Evaluates a single code snippet for AI authorship using Groq.
     """
+    # 0. Minimum line-count validation
+    validate_min_lines(payload.code, "Code snippet")
+
     active_api_key = (
         payload.api_key
         or os.getenv("GROQ_API_KEY")
@@ -535,6 +611,7 @@ def detect_ai_batch(
     }
     valid_exts = EXTENSIONS.get(language.lower(), (".py",))
 
+    skipped_short_ai: list[str] = []
     try:
         content = file.file.read()
         with zipfile.ZipFile(io.BytesIO(content), "r") as zip_ref:
@@ -545,9 +622,14 @@ def detect_ai_batch(
                 ):
                     if not name.endswith("/"):
                         clean_name = os.path.basename(name) or name
-                        py_files[clean_name] = zip_ref.read(name).decode(
+                        code_text = zip_ref.read(name).decode(
                             "utf-8", "ignore"
                         )
+                        non_empty = len([l for l in code_text.strip().splitlines() if l.strip()])
+                        if non_empty < MIN_LINES:
+                            skipped_short_ai.append(clean_name)
+                            continue
+                        py_files[clean_name] = code_text
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="Invalid ZIP file.")
     except Exception as e:
@@ -561,6 +643,18 @@ def detect_ai_batch(
         )
 
     results = []
+
+    # Report skipped short files
+    for short_file in skipped_short_ai:
+        results.append(
+            BatchAiResult(
+                file=short_file,
+                is_ai=False,
+                confidence=0,
+                reason=f"Skipped — fewer than {MIN_LINES} lines (too short for reliable analysis)",
+            )
+        )
+
     for filename, code in py_files.items():
         ai_check = ai_detect_generation(code, language, active_api_key)
 
