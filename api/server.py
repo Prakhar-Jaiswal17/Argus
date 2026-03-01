@@ -23,7 +23,10 @@ import httpx
 from groq import Groq
 
 
-from api.ast_engine import compare
+try:
+    from api.ast_engine import compare
+except ImportError:
+    from ast_engine import compare
 
 # ── App setup ────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -677,15 +680,12 @@ async def get_random_code(language: str = "python"):
         raise HTTPException(status_code=500, detail=f"Failed to fetch random code: {e}")
 
 
-# ── Serve Frontend ─────────────────────────────────────────────────────────────
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# ── Serve Frontend (local dev only, skipped on Vercel) ─────────────────────────
+if not os.environ.get("VERCEL"):
+    ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    app.mount("/static", StaticFiles(directory=ROOT_DIR), name="static")
 
-
-# Mount static files (like style.css)
-app.mount("/static", StaticFiles(directory=ROOT_DIR), name="static")
-
-
-@app.get("/")
-def serve_index():
-    """Serve the frontend HTML at the root URL."""
-    return FileResponse(os.path.join(ROOT_DIR, "index.html"))
+    @app.get("/")
+    def serve_index():
+        """Serve the frontend HTML at the root URL."""
+        return FileResponse(os.path.join(ROOT_DIR, "index.html"))
