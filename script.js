@@ -80,6 +80,8 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ api_key: key }),
         });
+        const ct = resp.headers.get('content-type') || '';
+        if (!ct.includes('application/json')) throw new Error('Not JSON');
         const data = await resp.json();
         serverReachable = true;
 
@@ -95,7 +97,7 @@
           return;
         }
       } catch (err) {
-        // Backend not reachable — accept key on client-side format alone
+        // Backend not reachable or returned non-JSON — accept key on format alone
         serverReachable = false;
       }
 
