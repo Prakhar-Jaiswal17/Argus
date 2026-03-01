@@ -151,6 +151,8 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ api_key: key }),
         });
+        const ct = resp.headers.get('content-type') || '';
+        if (!ct.includes('application/json')) throw new Error('Not JSON');
         const data = await resp.json();
 
         if (!data.valid) {
