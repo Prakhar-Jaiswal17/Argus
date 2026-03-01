@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const API_BASE = 'http://127.0.0.1:8000';
+  const API_BASE = ''; // Relative paths work on both localhost and Vercel
 
   // ── Gate Screen Logic ──
   let validatedApiKey = '';
